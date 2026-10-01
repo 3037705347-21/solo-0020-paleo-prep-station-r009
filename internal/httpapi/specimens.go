@@ -33,6 +33,25 @@ func (api *API) registerSpecimen(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, value)
 }
 
+func (api *API) registerSpecimenBatch(w http.ResponseWriter, r *http.Request) {
+	var request contracts.RegisterManifestRequest
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	result, err := api.service.RegisterSpecimenBatch(r.Context(), request)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	// A first-time commit answers 201; an idempotent replay of the same
+	// manifest answers 200 without creating anything new.
+	status := http.StatusCreated
+	if result.Replayed {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, result)
+}
+
 func (api *API) getSpecimen(w http.ResponseWriter, r *http.Request) {
 	value, err := api.service.GetSpecimen(r.Context(), r.PathValue("id"))
 	if err != nil {

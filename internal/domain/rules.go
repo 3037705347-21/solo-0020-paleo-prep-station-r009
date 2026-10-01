@@ -28,7 +28,10 @@ func optionalText(field, value string, max int) (string, error) {
 	return cleaned, nil
 }
 
-func validateCatalogNumber(value string) (string, error) {
+// NormalizeCatalogNumber trims, validates and upper-cases a catalog number.
+// The same normalization is shared by single registration and batch
+// registration so identity comparisons always use the canonical form.
+func NormalizeCatalogNumber(value string) (string, error) {
 	cleaned, err := requiredText("目录号", value, 64)
 	if err != nil {
 		return "", err
@@ -37,6 +40,23 @@ func validateCatalogNumber(value string) (string, error) {
 		return "", contracts.Invalid(
 			"invalid_catalog_number",
 			"目录号只能包含字母、数字、点、下划线和连字符",
+		)
+	}
+	return strings.ToUpper(cleaned), nil
+}
+
+// NormalizeManifestID applies the same identity normalization as catalog
+// numbers so that resubmitting the same manifest under a differently cased
+// identifier still resolves to the same stored manifest.
+func NormalizeManifestID(value string) (string, error) {
+	cleaned, err := requiredText("清册编号", value, 64)
+	if err != nil {
+		return "", err
+	}
+	if !catalogPattern.MatchString(cleaned) {
+		return "", contracts.Invalid(
+			"invalid_manifest_id",
+			"清册编号只能包含字母、数字、点、下划线和连字符",
 		)
 	}
 	return strings.ToUpper(cleaned), nil

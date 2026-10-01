@@ -77,6 +77,9 @@ func run(workflow string) error {
 		}
 		return nil
 
+	case "register-manifest":
+		return checkRegisterManifest(client, server.URL)
+
 	case "approve-prep-plan":
 		specimen, err := registerSpecimen(client, server.URL)
 		if err != nil {

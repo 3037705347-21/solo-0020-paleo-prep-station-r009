@@ -12,12 +12,24 @@ const (
 	KindInternal ErrorKind = "internal"
 )
 
+// ErrorDetail identifies a single failing element inside a batch request.
+type ErrorDetail struct {
+	// Index is the 1-based position of the offending entry inside the batch.
+	// It is zero when the failure targets the request envelope itself.
+	Index int `json:"index,omitempty"`
+	// Field is the optional name of the offending request field.
+	Field  string `json:"field,omitempty"`
+	Code   string `json:"code"`
+	Reason string `json:"reason"`
+}
+
 // Error carries a machine-readable code without coupling domain code to HTTP.
 type Error struct {
 	Kind    ErrorKind
 	Code    string
 	Message string
 	Cause   error
+	Details []ErrorDetail
 }
 
 func (e *Error) Error() string {
@@ -51,6 +63,16 @@ func Conflict(code, message string) error {
 
 func Internal(code, message string, cause error) error {
 	return &Error{Kind: KindInternal, Code: code, Message: message, Cause: cause}
+}
+
+// InvalidBatch attaches per-entry details to an invalid batch envelope error.
+func InvalidBatch(code, message string, details []ErrorDetail) error {
+	return &Error{Kind: KindInvalid, Code: code, Message: message, Details: details}
+}
+
+// ConflictBatch attaches per-entry details to a conflicting batch error.
+func ConflictBatch(code, message string, details []ErrorDetail) error {
+	return &Error{Kind: KindConflict, Code: code, Message: message, Details: details}
 }
 
 func AsError(err error) (*Error, bool) {

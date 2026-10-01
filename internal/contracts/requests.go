@@ -8,6 +8,11 @@ type RegisterSpecimenRequest struct {
 	JacketNotes   string `json:"jacket_notes"`
 }
 
+type RegisterManifestRequest struct {
+	ManifestID string                    `json:"manifest_id"`
+	Items      []RegisterSpecimenRequest `json:"items"`
+}
+
 type CreatePlanRequest struct {
 	Objective      string `json:"objective"`
 	Method         string `json:"method"`

@@ -26,6 +26,7 @@ go run ./cmd/paleo-prep-station --addr 127.0.0.1:18133
 ## 主要接口
 
 - `GET /specimens` 与 `POST /specimens`
+- `POST /specimens/batch`：按清册批次登记标本
 - `GET /specimens/{id}`
 - `POST /specimens/{id}/plans`
 - `GET /plans/{id}`
@@ -33,12 +34,33 @@ go run ./cmd/paleo-prep-station --addr 127.0.0.1:18133
 - `POST /plans/{id}/progress`
 - `POST /specimens/{id}/release`
 
+### 批次登记
+
+`POST /specimens/batch` 接收一份清册：
+
+```json
+{
+  "manifest_id": "MF-2026-018",
+  "items": [
+    {"catalog_number": "pps-2026-020", "field_label": "北坡-20", "matrix_kind": "粉砂岩"},
+    {"catalog_number": "PPS-2026-021", "field_label": "北坡-21", "matrix_kind": "泥岩"}
+  ]
+}
+```
+
+- 目录号与清册编号在登记前统一去除首尾空白并转为大写后再做身份判断。
+- 整份清册在同一个仓储事务内提交：任一条目非法、批内目录号重复、与库内已有目录号冲突，或清册编号已被不同内容占用时，整体失败且不会留下任何标本或半成品标识。
+- 首次成功返回 `201`，响应包含 `manifest_id`、`replayed=false` 与全部标本；批次内每条标本与单条登记具有相同的 `registered` 初始状态、版本 1 和同一登记时刻。
+- 使用相同清册编号和相同内容重复提交时幂等返回 `200`（`replayed=true`，返回首次提交的标本，不新建数据）；相同编号、不同内容返回 `409`。
+- 失败响应在既有 `code`/`message` 之外附带 `details`，逐条给出 1-based 的条目序号、字段和原因码。
+
 ## 本地验证
 
 每条业务链路都可以独立执行：
 
 ```bash
 go run ./cmd/workflowcheck --workflow register-specimen
+go run ./cmd/workflowcheck --workflow register-manifest
 go run ./cmd/workflowcheck --workflow approve-prep-plan
 go run ./cmd/workflowcheck --workflow log-preparation
 go run ./cmd/workflowcheck --workflow release-for-study

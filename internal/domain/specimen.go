@@ -41,7 +41,7 @@ func NewSpecimen(
 	if id == "" {
 		return Specimen{}, contracts.Internal("missing_generated_id", "标本标识未生成", nil)
 	}
-	catalog, err := validateCatalogNumber(catalogNumber)
+	catalog, err := NormalizeCatalogNumber(catalogNumber)
 	if err != nil {
 		return Specimen{}, err
 	}
