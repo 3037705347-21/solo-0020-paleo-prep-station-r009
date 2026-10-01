@@ -8,6 +8,14 @@ type RegisterSpecimenRequest struct {
 	JacketNotes   string `json:"jacket_notes"`
 }
 
+// RegisterSpecimensBatchRequest registers one manifest of catalog records
+// as a single all-or-nothing batch. The client-provided ManifestID makes a
+// retry of the same manifest idempotent.
+type RegisterSpecimensBatchRequest struct {
+	ManifestID string                    `json:"manifest_id"`
+	Items      []RegisterSpecimenRequest `json:"items"`
+}
+
 type CreatePlanRequest struct {
 	Objective      string `json:"objective"`
 	Method         string `json:"method"`

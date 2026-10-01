@@ -16,6 +16,14 @@
       "command": "go run ./cmd/workflowcheck --workflow register-specimen"
     },
     {
+      "workflow_id": "register-specimen-batch",
+      "command": "go run ./cmd/workflowcheck --workflow register-specimen-batch"
+    },
+    {
+      "workflow_id": "register-specimen-batch-atomic",
+      "command": "go run ./cmd/workflowcheck --workflow register-specimen-batch-atomic"
+    },
+    {
       "workflow_id": "approve-prep-plan",
       "command": "go run ./cmd/workflowcheck --workflow approve-prep-plan"
     },

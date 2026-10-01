@@ -18,6 +18,17 @@ type Error struct {
 	Code    string
 	Message string
 	Cause   error
+	// Details carries stable, structured per-entry information for batch
+	// operations. It is nil for ordinary single-object errors.
+	Details []BatchItemIssue
+}
+
+// BatchItemIssue identifies the offending entry inside a batch request.
+type BatchItemIssue struct {
+	Index         int    `json:"index"`
+	CatalogNumber string `json:"catalog_number,omitempty"`
+	Code          string `json:"code"`
+	Message       string `json:"message"`
 }
 
 func (e *Error) Error() string {
@@ -51,6 +62,14 @@ func Conflict(code, message string) error {
 
 func Internal(code, message string, cause error) error {
 	return &Error{Kind: KindInternal, Code: code, Message: message, Cause: cause}
+}
+
+func InvalidBatch(code, message string, details []BatchItemIssue) error {
+	return &Error{Kind: KindInvalid, Code: code, Message: message, Details: details}
+}
+
+func BatchConflict(code, message string, details []BatchItemIssue) error {
+	return &Error{Kind: KindConflict, Code: code, Message: message, Details: details}
 }
 
 func AsError(err error) (*Error, bool) {

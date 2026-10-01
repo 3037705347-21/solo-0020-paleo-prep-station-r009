@@ -42,6 +42,42 @@ type releaseView struct {
 	SpecimenID string `json:"specimen_id"`
 }
 
+type batchItemView struct {
+	ID            string    `json:"id"`
+	CatalogNumber string    `json:"catalog_number"`
+	Status        string    `json:"status"`
+	Version       int       `json:"version"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+type batchResponse struct {
+	ManifestID string          `json:"manifest_id"`
+	Status     string          `json:"status"`
+	ItemCount  int             `json:"item_count"`
+	Items      []batchItemView `json:"items"`
+}
+
+type issueView struct {
+	Index         int    `json:"index"`
+	CatalogNumber string `json:"catalog_number"`
+	Code          string `json:"code"`
+	Message       string `json:"message"`
+}
+
+type errorResponse struct {
+	Code    string      `json:"code"`
+	Message string      `json:"message"`
+	Details []issueView `json:"details"`
+}
+
+type specimenList struct {
+	Items []struct {
+		ID            string `json:"id"`
+		CatalogNumber string `json:"catalog_number"`
+	} `json:"items"`
+}
+
 func main() {
 	workflow := flag.String("workflow", "", "workflow id to check")
 	flag.Parse()
@@ -76,6 +112,12 @@ func run(workflow string) error {
 			return errors.New("registered specimen cannot be read back")
 		}
 		return nil
+
+	case "register-specimen-batch":
+		return checkBatchRegistration(client, server.URL)
+
+	case "register-specimen-batch-atomic":
+		return checkBatchAtomicity(client, server.URL)
 
 	case "approve-prep-plan":
 		specimen, err := registerSpecimen(client, server.URL)
@@ -194,6 +236,227 @@ func registerSpecimen(client *http.Client, baseURL string) (specimenView, error)
 	return specimen, err
 }
 
+func checkBatchRegistration(client *http.Client, baseURL string) error {
+	items := []contracts.RegisterSpecimenRequest{
+		{
+			CatalogNumber: "pps-2026-101",
+			FieldLabel:    "  北坡-21  ",
+			TaxonHint:     "蜥脚类",
+			MatrixKind:    "泥岩",
+		},
+		{
+			CatalogNumber: "PPS-2026-102",
+			FieldLabel:    "北坡-22",
+			MatrixKind:    "粉砂岩",
+			JacketNotes:   "夹克编号待回填",
+		},
+	}
+
+	var batch batchResponse
+	if err := requestJSON(
+		client,
+		http.MethodPost,
+		baseURL+"/specimens/batch",
+		contracts.RegisterSpecimensBatchRequest{ManifestID: "manifest-2026-10", Items: items},
+		http.StatusCreated,
+		&batch,
+	); err != nil {
+		return err
+	}
+	if batch.Status != "registered" || batch.ItemCount != 2 || len(batch.Items) != 2 {
+		return fmt.Errorf("unexpected first batch result: %+v", batch)
+	}
+	for index, item := range batch.Items {
+		if item.Status != "registered" || item.Version != 1 {
+			return fmt.Errorf("batch item %d not in single-register initial state: %+v", index, item)
+		}
+		if !item.CreatedAt.Equal(item.UpdatedAt) || item.CreatedAt.IsZero() {
+			return fmt.Errorf("batch item %d has inconsistent timestamps: %+v", index, item)
+		}
+		var fetched batchItemView
+		if err := requestJSON(client, http.MethodGet, baseURL+"/specimens/"+item.ID, nil, http.StatusOK, &fetched); err != nil {
+			return err
+		}
+		if fetched.Status != "registered" || fetched.Version != 1 {
+			return fmt.Errorf("fetched batch specimen differs in state: %+v", fetched)
+		}
+	}
+	if batch.Items[0].CatalogNumber != "PPS-2026-101" {
+		return fmt.Errorf("catalog number not normalized, got %q", batch.Items[0].CatalogNumber)
+	}
+
+	// Re-submit the same manifest with the same content: idempotent replay,
+	// no new specimens.
+	var replay batchResponse
+	if err := requestJSON(
+		client,
+		http.MethodPost,
+		baseURL+"/specimens/batch",
+		contracts.RegisterSpecimensBatchRequest{
+			ManifestID: "  MANIFEST-2026-10 ",
+			Items:      items,
+		},
+		http.StatusOK,
+		&replay,
+	); err != nil {
+		return err
+	}
+	if replay.Status != "already_registered" || replay.ItemCount != 2 {
+		return fmt.Errorf("unexpected replay result: %+v", replay)
+	}
+	for index := range replay.Items {
+		if replay.Items[index].ID != batch.Items[index].ID {
+			return errors.New("manifest replay returned different specimen ids")
+		}
+	}
+	var list specimenList
+	if err := requestJSON(client, http.MethodGet, baseURL+"/specimens", nil, http.StatusOK, &list); err != nil {
+		return err
+	}
+	if len(list.Items) != 2 {
+		return fmt.Errorf("replay created extra specimens, list length %d", len(list.Items))
+	}
+
+	// Same manifest number, different contents: conflict, still no new records.
+	changedBody := contracts.RegisterSpecimensBatchRequest{
+		ManifestID: "manifest-2026-10",
+		Items: []contracts.RegisterSpecimenRequest{
+			items[0],
+			{
+				CatalogNumber: "PPS-2026-999",
+				FieldLabel:    "北坡-99",
+				MatrixKind:    "页岩",
+			},
+		},
+	}
+	raw, err := requestJSONResponse(
+		client,
+		http.MethodPost,
+		baseURL+"/specimens/batch",
+		changedBody,
+		http.StatusConflict,
+		nil,
+	)
+	if err != nil {
+		return err
+	}
+	var conflict errorResponse
+	if err := json.Unmarshal(raw, &conflict); err != nil {
+		return err
+	}
+	if conflict.Code != "manifest_content_conflict" {
+		return fmt.Errorf("unexpected conflict code %q", conflict.Code)
+	}
+	if err := requestJSON(client, http.MethodGet, baseURL+"/specimens", nil, http.StatusOK, &list); err != nil {
+		return err
+	}
+	if len(list.Items) != 2 {
+		return fmt.Errorf("content-conflict submission changed the store, list length %d", len(list.Items))
+	}
+	return nil
+}
+
+func checkBatchAtomicity(client *http.Client, baseURL string) error {
+	// Seed one specimen through the ordinary single-entry route.
+	if _, err := registerSpecimen(client, baseURL); err != nil {
+		return err
+	}
+
+	// Case 1: duplicate catalog number inside the manifest.
+	dupInBatch := contracts.RegisterSpecimensBatchRequest{
+		ManifestID: "manifest-dup-in-batch",
+		Items: []contracts.RegisterSpecimenRequest{
+			{CatalogNumber: "PPS-2026-201", FieldLabel: "东坡-01", MatrixKind: "泥岩"},
+			{CatalogNumber: "pps-2026-201", FieldLabel: "东坡-02", MatrixKind: "页岩"},
+		},
+	}
+	raw, err := requestJSONResponse(client, http.MethodPost, baseURL+"/specimens/batch", dupInBatch, http.StatusConflict, nil)
+	if err != nil {
+		return err
+	}
+	var conflict errorResponse
+	if err := json.Unmarshal(raw, &conflict); err != nil {
+		return err
+	}
+	if conflict.Code != "duplicate_catalog_number_in_batch" || len(conflict.Details) != 1 {
+		return fmt.Errorf("unexpected in-batch duplicate error: %+v", conflict)
+	}
+	if conflict.Details[0].Index != 1 || conflict.Details[0].CatalogNumber != "PPS-2026-201" {
+		return fmt.Errorf("unexpected issue detail: %+v", conflict.Details[0])
+	}
+
+	// Case 2: collision with the store plus an invalid field in one entry.
+	collision := contracts.RegisterSpecimensBatchRequest{
+		ManifestID: "manifest-collision",
+		Items: []contracts.RegisterSpecimenRequest{
+			{CatalogNumber: "PPS-2026-210", FieldLabel: "东坡-10", MatrixKind: "泥岩"},
+			{CatalogNumber: "PPS-2026-001", FieldLabel: "东坡-11", MatrixKind: "粉砂岩"},
+			{CatalogNumber: "PPS-2026-211", FieldLabel: "", MatrixKind: "泥岩"},
+		},
+	}
+	if raw, err = requestJSONResponse(client, http.MethodPost, baseURL+"/specimens/batch", collision, http.StatusBadRequest, nil); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(raw, &conflict); err != nil {
+		return err
+	}
+	if conflict.Code != "invalid_batch_items" || len(conflict.Details) != 1 {
+		return fmt.Errorf("unexpected invalid-batch error: %+v", conflict)
+	}
+	if conflict.Details[0].Index != 2 || conflict.Details[0].Code != "required_field" {
+		return fmt.Errorf("unexpected invalid issue detail: %+v", conflict.Details[0])
+	}
+	// The same corrected manifest id can be retried because the failed attempt
+	// never registered a manifest record.
+	collision.Items[2].FieldLabel = "东坡-12"
+	if _, err := requestJSONResponse(client, http.MethodPost, baseURL+"/specimens/batch", collision, http.StatusConflict, nil); err != nil {
+		return err
+	}
+
+	// Case 3: malformed manifest shape.
+	badManifest := contracts.RegisterSpecimensBatchRequest{
+		ManifestID: "bad id!",
+		Items:      collision.Items,
+	}
+	if _, err := requestJSONResponse(client, http.MethodPost, baseURL+"/specimens/batch", badManifest, http.StatusBadRequest, nil); err != nil {
+		return err
+	}
+	empty := contracts.RegisterSpecimensBatchRequest{ManifestID: "manifest-empty"}
+	if _, err := requestJSONResponse(client, http.MethodPost, baseURL+"/specimens/batch", empty, http.StatusBadRequest, nil); err != nil {
+		return err
+	}
+
+	// Exactly the seeded specimen plus nothing from the failed batches.
+	var list specimenList
+	if err := requestJSON(client, http.MethodGet, baseURL+"/specimens", nil, http.StatusOK, &list); err != nil {
+		return err
+	}
+	if len(list.Items) != 1 {
+		return fmt.Errorf("failed batches left partial specimens, list length %d: %+v", len(list.Items), list.Items)
+	}
+	if list.Items[0].CatalogNumber != "PPS-2026-001" {
+		return fmt.Errorf("unexpected remaining specimen: %+v", list.Items[0])
+	}
+
+	// The failed manifest ids are reusable: submitting the corrected
+	// in-batch-duplicate manifest now succeeds.
+	recovered := contracts.RegisterSpecimensBatchRequest{
+		ManifestID: "manifest-dup-in-batch",
+		Items: []contracts.RegisterSpecimenRequest{
+			{CatalogNumber: "PPS-2026-201", FieldLabel: "东坡-01", MatrixKind: "泥岩"},
+			{CatalogNumber: "PPS-2026-202", FieldLabel: "东坡-02", MatrixKind: "页岩"},
+		},
+	}
+	var batch batchResponse
+	if err := requestJSON(client, http.MethodPost, baseURL+"/specimens/batch", recovered, http.StatusCreated, &batch); err != nil {
+		return err
+	}
+	if batch.Status != "registered" || batch.ItemCount != 2 {
+		return fmt.Errorf("unexpected recovered batch result: %+v", batch)
+	}
+	return nil
+}
+
 func createPlan(client *http.Client, baseURL, specimenID string) (planView, error) {
 	var plan planView
 	err := requestJSON(
@@ -260,38 +523,50 @@ func requestJSON(
 	wantStatus int,
 	target any,
 ) error {
+	_, err := requestJSONResponse(client, method, url, body, wantStatus, target)
+	return err
+}
+
+func requestJSONResponse(
+	client *http.Client,
+	method string,
+	url string,
+	body any,
+	wantStatus int,
+	target any,
+) ([]byte, error) {
 	var payload io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		payload = bytes.NewReader(encoded)
 	}
 	request, err := http.NewRequest(method, url, payload)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer response.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if response.StatusCode != wantStatus {
-		return fmt.Errorf("request %s %s returned %d: %s", method, url, response.StatusCode, string(raw))
+		return raw, fmt.Errorf("request %s %s returned %d: %s", method, url, response.StatusCode, string(raw))
 	}
 	if target == nil || len(raw) == 0 {
-		return nil
+		return raw, nil
 	}
 	if err := json.Unmarshal(raw, target); err != nil {
-		return fmt.Errorf("decode response for %s %s: %w", method, url, err)
+		return raw, fmt.Errorf("decode response for %s %s: %w", method, url, err)
 	}
-	return nil
+	return raw, nil
 }

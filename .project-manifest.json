@@ -64,6 +64,29 @@
       ]
     },
     {
+      "id": "register-specimen-batch",
+      "name": "Register specimens by manifest batch",
+      "entry": "POST /specimens/batch",
+      "steps": [
+        "normalize manifest number and every catalog number",
+        "validate all entries, in-batch uniqueness and stored catalog conflicts inside one mutation",
+        "commit all specimens and the manifest fingerprint record atomically",
+        "answer repeated submission of the same manifest idempotently"
+      ],
+      "success": "returns every specimen with the same initial state, version and timestamps as single registration",
+      "failure": "invalid entries, in-batch duplicates, stored conflicts or manifest content mismatch reject the whole batch without partial specimens or dangling identifiers",
+      "verification": "workflowcheck covers batch success and replay idempotency, and an atomicity workflow proving every failure mode leaves the store untouched",
+      "module_ids": [
+        "entrypoint",
+        "runtimecheck",
+        "httpapi",
+        "station",
+        "domain",
+        "repository",
+        "contracts"
+      ]
+    },
+    {
       "id": "approve-prep-plan",
       "name": "Approve preparation plan",
       "entry": "POST /specimens/{id}/plans + POST /plans/{id}/approval",
@@ -137,6 +160,6 @@
       "error_propagation",
       "concurrency"
     ],
-    "notes": "Plan and specimen state changes share one repository mutation; duplicate catalog numbers and unfinished plans are rejected at commit time."
+    "notes": "Plan and specimen state changes share one repository mutation; duplicate catalog numbers and unfinished plans are rejected at commit time. Batch registration validates and commits every manifest entry plus its manifest record in one mutation, so failures never persist partial specimens or generated identifiers."
   }
 }
